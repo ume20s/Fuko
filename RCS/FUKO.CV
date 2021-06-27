@@ -1,0 +1,928 @@
+head     1.4;
+access   ;
+symbols  ;
+locks    ;
+comment  @ * @;
+
+
+1.4
+date     91.01.26.18.31.34;
+author   UME20;
+state    Exp;
+branches ;
+next     1.3;
+
+1.3
+date     91.01.24.22.42.10;
+author   UME20;
+state    Exp;
+branches ;
+next     1.2;
+
+1.2
+date     91.01.24.22.00.30;
+author   UME20;
+state    Exp;
+branches ;
+next     1.1;
+
+1.1
+date     91.01.22.22.01.54;
+state    Exp;
+branches ;
+next     ;
+
+
+desc
+@初公開バージョン
+@
+
+
+1.4
+log
+@プロトタイプ宣言などの追加（これでワーニングが減った）
+g_lio.h というヘッダを読むようにした．
+その他，引数の型などの変更
+ＣＰネットとニフティにリリース
+@
+text
+@/*
+ * フーコーの振り子 [ fuko.c ]
+ *      first type  : 1990/12/10
+ *                         12/12 : 振り子部分完成
+ *                         12/16 : 一応の完成
+ *                    1991/01/24 : グラフィックライブラリの変更
+ *                                 南半球対応
+ */
+
+static char rcsid[]="$Header$";
+
+#include <conio.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <signal.h>
+#include "g_lio.h"
+
+#define		CX		424						/* 描画の中心 */
+#define		CY		200
+#define		WX		152						/* グラフの幅 */
+#define		WY		152
+#define		IDO		43.1					/* 緯度のデフォルト */
+#define		R		35						/* 振り子の大きさ */
+#define		NAG		20.0					/* 振り子の弦の長さ */
+#define		G		9.8						/* 重力加速度 */
+#define		W		0.000073				/* 地球自転角速度[rad/sec]*/
+#define		DT		0.1						/* 時間の刻み */
+
+#define		E2		5						/* イベント２ */
+#define		E3		10						/* イベント３ */
+#define		E4		30						/* イベント４ */
+#define		E5		180						/* イベント５ */
+
+
+/*********************************************************************
+ ******* 関数プロトタイプ ********************************************
+ ********************************************************************/
+
+void	main(int argc,char *argv[]);	/* メイン */
+void	initialize(void);				/* グラフィック初期化 */
+void	get_furiko(void);				/* 振り子get */
+double	ido_check(int, char *[]);		/* 引数(緯度)チェック */
+
+void	ojiisan(void);					/* 札幌における振り子の挙動 */
+void	opening(void);					/* オープニング */
+void	event_01(void);					/* 最初の説明 */
+void	event_02(void);					/* 変化しない */
+void	event_03(void);					/* 変化し始めたが気付かぬ孫 */
+void	event_04(void);					/* 気付いた孫 */
+void	event_05(void);					/* 孫，おじいさんを心配する */
+void	event_06(void);					/* 孫，さすがに眠い */
+void	ending(void);					/* エンディング */
+void	keika_fuko(double lim);			/* 指定時刻まで待つ */
+void	pr_fuko(char *);				/* セリフ＆振り子表示 */
+void	hit_fuko(void);					/* キー入力があるまで振り子が動く*/
+void	hit_any_key(void);				/* 何かキーを押してください */
+void	hit_dsp(void);					/* それを表示 */
+void	hit_rmv(void);					/* それを消去 */
+void	ctrl_c1(void);					/* 途中で投げ出してしまう */
+void	ctrl_c2(void);
+
+void	majime(void);					/* 指定緯度における振り子の挙動*/
+
+void	calc_init(void);				/* 初期値計算 */
+void	fuko(void);						/* 振子本体 */
+void	waku(void);						/* ワク */
+void	wakusenn(void);					/* 線引き */
+double	rad(double);					/* 度 to ラジアン */
+unsigned int	chg_page(int);			/* ページチェンジ */
+void	g_quit(void);					/* グラフィック後始末 */
+
+void	err_no_memory(void);			/* メモリが足りない */
+void	err_signal(void);				/* シグナルがセットできない */
+
+/*********************************************************************
+ ******* 広域変数（振り子関係は面倒だから全部広域変数(汗;) ***********
+ ********************************************************************/
+
+static int	*furiko;				/* 振り子graphic */
+static int	f_leng;					/* 振り子graphicの大きさ */
+double	t = 0;						/* 経過時間 */
+double	g;							/* 加速度係数 */
+double	th = IDO;					/* 緯度->２ωsin(θ) */
+double	x = 0, y = WY - R;			/* 時刻ｔにおける座標 */
+double	ax, ay;						/* 時刻ｔにおける加速度 */
+double	vx = 0, vy = 0;				/* 時刻ｔにおける速度 */
+unsigned int	page = 0;			/* 描画ページ */
+double	tx,ty;						/* 消去用に前に座標をとっとく*/
+char	buf[20];					/* 文字列変換用バッファ@ */
+
+/*********************************************************************
+ ******* メイン ******************************************************
+ ********************************************************************/
+void	main(int argc,char *argv[])
+{
+	initialize();						/* 画面初期化 */
+	get_furiko();						/* 振り子グラフィック */
+	
+	/* 引数がなければデフォルト動作 */
+	if(argc == 1){
+		ojiisan();
+		/*NOTREACHED*/
+	} else { 
+	/* 引数があれば緯度の取得と指定緯度動作 */
+		th = ido_check(argc,argv);
+		majime();
+		/*NOTREACHED*/
+	}
+}
+
+/******* グラフィック初期化 *****************************************/
+void	initialize(void)
+{
+	g_init();
+	g_screen(0,0);
+	g_cls();
+	g_screen(1,0);
+	g_cls();
+	g_palete(3,4);
+	/*ESC シーケンス(cursor off & key dsp off & cls) */
+	fputs("\x1b[>5h\x1b>1h\x1b[2J",stdout);
+}
+
+/******* 振り子グラフィックの格納 ***********************************/
+void	get_furiko(void)
+{
+	g_screen(0,0);
+	/* 振り子用イメージバッファ@確保 */
+	f_leng = (unsigned int)(((R*2+7)/4)*R*3+4);
+	furiko = (char *)malloc(f_leng);
+	if(furiko == NULL){
+		err_no_memory();
+		/*NOTREACHED*/
+	}
+	/* 振り子の格納 */
+	g_circle(320,200,R,4);
+	g_paint(320,200,4,4);
+	g_get(320-R,200-R,320+R,200+R,furiko,f_leng);
+	g_line(320-R,200-R,320+R,200+R,0,2);
+}
+
+/******* 引数(緯度)チェック *****************************************/
+double	ido_check(int argc, char *argv[])
+{
+	double	ido;
+	
+	ido = atof(*(++argv));
+	/* 緯度が変だ */
+	if((ido < -90) || (ido > 90)){
+		g_quit();
+		fputs("\nできれば -90度から 90度（北緯換算）までの範囲で",stderr);
+		fputs("指定してほしいのぢゃが……．\n",stderr);
+		exit(1);
+		/*NOTREACHED*/
+	}
+	return ido;
+}
+
+/*********************************************************************
+ ******* 札幌における振り子の挙動（引数無しの場合）*******************
+ ********************************************************************/
+void	ojiisan(void)
+{
+	opening();
+	fputs("\x1b[2J老人「ちょっと待っておれ．\n",stdout);
+	fputs("　@　@　@今，準備をしておるからの……\n",stdout);
+	
+	/* シグナルの処理 */
+	if(signal(SIGINT,ctrl_c1) == (int(*)()) -1){
+		err_signal();
+		/*NOTREACHED*/
+	}
+	
+	/* 初期値の計算 */
+	calc_init();
+	
+	/* 最初の書き込み */
+	waku();
+	page = chg_page(0);
+	g_put(CX-((int)x+R),CY-((int)y+R),furiko,f_leng,4,0);
+	tx = x;
+	ty = y;
+	page = chg_page(page);
+	
+	/* 最初の説明 */
+	event_01();
+	
+	/* 変化しない */
+	keika_fuko(E2*60);
+	event_02();
+	
+	/* 変化し始めたのに孫は気がつかない */
+	keika_fuko(E3*60);
+	event_03();
+	
+	/* 孫にもようやく変化が感じとれた */
+	keika_fuko(E4*60);
+	event_04();
+	if(signal(SIGINT,ctrl_c2) == (int(*)()) -1){
+		err_signal();
+		/*NOTREACHED*/
+	}
+	
+	/* 孫，おじいさんを心配する */
+	keika_fuko(E5*60);
+	event_05();
+	
+	/* 孫，さすがに眠い */
+	keika_fuko(12*60*60);
+	event_06();
+	
+	/* エンディング（２４時間たった） */
+	keika_fuko(24*60*60);
+	ending();
+	/*NOTREACHED*/
+}
+
+/******* オープニング ***********************************************/
+void	opening(void)
+{
+	fputs("孫　@「ねぇねぇ，おじいちゃん．」\n",stdout);
+	fputs("老人「なんぢゃ？」\n\n",stdout);
+	hit_any_key();
+	fputs("孫　@「“フーコーの振り子”ってなーに？」\n",stdout);
+	fputs("老人「ああ，とっても はやっておる振り子の事ぢゃよ」\n",stdout);
+	fputs("孫　@「それは“流行”」\n",stdout);
+	fputs("老人「ん？　@なら，風の向きを見るやつぢゃ．」\n",stdout);
+	fputs("孫　@「それは“風向”！」\n",stdout);
+	fputs("老人「効力が無い，という事かの？」\n",stdout);
+	fputs("孫　@「それは“無効”！」\n",stdout);
+	fputs("老人「しあわせじゃない……」\n",stdout);
+	fputs("孫　@「それは“不幸”！」\n",stdout);
+	fputs("老人「山の高さ．」\n",stdout);
+	fputs("孫　@「“標高”！」\n",stdout);
+	fputs("老人「感度……」\n",stdout);
+	fputs("孫　@「“良好”！！」\n",stdout);
+	fputs("老人「八甲田山　@死の」\n",stdout);
+	fputs("孫　@「“彷徨”！！！」 \n",stdout);
+	fputs("老人「……」\n",stdout);
+	fputs("孫　@「……」\n\n",stdout);
+	hit_any_key();
+	fputs("老人，孫「どうも しつれーしやしたー！！！！」\n\n",stdout);
+	hit_any_key();
+	fputs("孫　@「そーじゃなくってー！」\n",stdout);
+	fputs("老人「わかっとるよ，“フーコーの振り子”ぢゃろ？」\n\n",stdout);
+	hit_any_key();
+}
+
+/******* 最初の説明 *************************************************/
+void	event_01(void)
+{
+	int	i;		/* 有象無象 */
+	
+	pr_fuko("　@　@　@これがフーコーの振り子ぢゃ」\n\n");
+	hit_fuko();
+	
+	pr_fuko("孫　@「……え？これ？\n");
+	pr_fuko("　@　@　@普通の振り子を上から見ただけ\n");
+	pr_fuko("　@　@　@じゃない？」\n\n");
+	hit_fuko();
+	
+	pr_fuko("老人「お前には，これがただの振り子\n");
+	pr_fuko("　@　@　@にしか見えんとゆーのか？」\n\n");
+	hit_fuko();
+	
+	pr_fuko("孫　@「……");
+	for(i=0; i<80; i++)
+		fuko();
+	pr_fuko("……うん……」\n\n");
+	hit_fuko();
+	
+	pr_fuko("老人「いや，実はこれはただの振り子\n");
+	pr_fuko("　@　@　@なんぢゃ(笑)」\n\n");
+	pr_fuko("孫　@「おじいちゃん！！！(笑)」\n\n");
+	hit_fuko();
+	
+	pr_fuko("老人「じゃが，本当にこれがフーコー\n");
+	pr_fuko("　@　@　@の振り子なんぢゃよ」\n\n");
+	pr_fuko("孫　@「えーー？？普通の振り子がフー\n");
+	pr_fuko("　@　@　@コーの振り子なのぉ？？？」\n\n");
+	hit_fuko();
+	
+	pr_fuko("老人「そうなんぢゃ．\n");
+	pr_fuko("　@　@　@ところで，この振り子ぢゃが\n");
+	pr_fuko("　@　@　@空気の抵抗がないものとすると\n");
+	pr_fuko("　@　@　@これからどうなっていくと思う\n");
+	pr_fuko("　@　@　@かの？」\n\n");
+	hit_fuko();
+	
+	pr_fuko("孫　@「空気の抵抗がないんだっだら，\n");
+	pr_fuko("　@　@　@ずーっとこのまま振れ続けるん\n");
+	pr_fuko("　@　@　@じゃない？　@違う？」\n\n");
+	pr_fuko("老人「いや，まぁ，そうなんぢゃが，\n");
+	pr_fuko("　@　@　@振り子の振れる向きはどうなる\n");
+	pr_fuko("　@　@　@と思うかの？」\n\n");
+	hit_fuko();
+	
+	pr_fuko("孫　@「振り子の振れる向きぃ？\n");
+	pr_fuko("　@　@　@えーとぉ……．\n");
+	for(i=0; i<40; i++)
+		fuko();
+	pr_fuko("　@　@　@やっぱり，ずーーっとこのまま\n");
+	pr_fuko("　@　@　@なんじゃじゃないの？」\n\n");
+	pr_fuko("老人「ところがそうではないのぢゃ．\n");
+	pr_fuko("　@　@　@なんと！！！\n");
+	pr_fuko("　@　@　@時と共に振れる向きもだんだん\n");
+	pr_fuko("　@　@　@と変っていくんぢゃ」\n\n");
+	hit_fuko();
+	
+	pr_fuko("孫　@「ウッソォーーーーーーーーー\n");
+	pr_fuko("　@　@　@ヤッダァ@ーーーーーーーーー\n");
+	pr_fuko("　@　@　@シンジランナーーーーーーイ」\n\n");
+	hit_fuko();
+	
+	pr_fuko("老人「……お前……\n");
+	pr_fuko("　@　@　@将来，きっと立派な女子大生に\n");
+	pr_fuko("　@　@　@なるぞ……(汗;)」\n\n");
+	pr_fuko("孫　@「ありがと(笑)．\n");
+	pr_fuko("　@　@　@でも，私，大学行くつもりない\n");
+	pr_fuko("　@　@　@から．」\n\n");
+	pr_fuko("老人「あ，そぉゆぅとったな」\n\n");
+	hit_fuko();
+	
+	pr_fuko("孫　@「それよりも，どーして振り子の\n");
+	pr_fuko("　@　@　@向きが変ってっちゃうの？」\n\n");
+	pr_fuko("老人「それはだなぁ，\n");
+	pr_fuko("　@　@　@地球の自転のせいなんぢゃ．」\n\n");
+	hit_fuko();
+	
+	pr_fuko("孫　@「地球が回ってるせい？」\n\n");
+	pr_fuko("老人「そう．振り子っちゅうのは，一\n");
+	pr_fuko("　@　@　@度振れだすと，ずーっと同じ向\n");
+	pr_fuko("　@　@　@きで振れておるのぢゃが，回っ\n");
+	pr_fuko("　@　@　@ておる地球から見ると，向きが\n");
+	pr_fuko("　@　@　@変化しちょるように見みえるの\n");
+	pr_fuko("　@　@　@ぢゃ．\n");
+	pr_fuko("　@　@　@つまり，実は振り子の振れる向\n");
+	pr_fuko("　@　@　@きが変っているのではなくて，\n");
+	pr_fuko("　@　@　@見る方向が変っていくっちゅう\n");
+	pr_fuko("　@　@　@わけなんぢゃ．」\n\n");
+	hit_fuko();
+	
+	pr_fuko("孫　@「すると，今動いてるこの振り子\n");
+	pr_fuko("　@　@　@も，向きが変ってく？」\n\n");
+	pr_fuko("老人「うむ．\n");
+	pr_fuko("　@　@　@時と共に変ってゆくのぢゃ．」\n\n");
+	pr_fuko("孫　@「わーい，面白そう！\n");
+	pr_fuko("　@　@　@これ，ずーっと見てていい？」\n\n");
+	pr_fuko("老人「ああ，いいぞ．」\n\n");
+	hit_fuko();
+}
+
+/******* 変化しない *************************************************/
+void	event_02(void)
+{
+	pr_fuko("\x1b[2J\n\n\n孫　@「おじいちゃん，ぜんぜん向きが\n");
+	pr_fuko("　@　@　@変んないよぉ．」\n\n");
+	fputs("老人「たった",stdout);
+	fputs(itoa(E2,buf,10),stdout);;
+	fputs("分で，何を泣き言をゆ\n",stdout);
+	pr_fuko("　@　@　@うとるのぢゃ．もう少し辛抱せ\n");
+	pr_fuko("　@　@　@い．」\n\n");
+	pr_fuko("孫　@「ほーい……．」\n\n");
+	hit_fuko();
+}
+
+/******* 変化し始めたが，孫は気がつかない ***************************/
+void	event_03(void)
+{
+	pr_fuko("\x1b[2J\n\n\n老人「ほれ，ほんの少しぢゃが，向き\n");
+	pr_fuko("　@　@　@が変ってきたぢゃろ？」\n\n");
+	pr_fuko("孫　@「うーん，まだわかんないよぉ」\n\n");
+	hit_fuko();
+	pr_fuko("老人「お前，目が悪いのぉ(笑)」\n\n");
+	pr_fuko("孫　@「ほっといてちょうだい(笑)\n");
+	pr_fuko("　@　@（こんなんで向きが変ったの）\n");
+	pr_fuko("　@　@（が判るほうが異常だよぉ！）」\n\n");
+	hit_fuko();
+	pr_fuko("老人「……ん？何か言ったか？」\n\n");
+	pr_fuko("孫　@「んん，なんも．(汗;)\n");
+	pr_fuko("　@　@　@それよりも，はやく続きを見ま\n");
+	pr_fuko("　@　@　@しょう(笑)」\n");
+	hit_fuko();
+}
+
+/******* 変化し始めた ***********************************************/
+void	event_04(void)
+{
+	pr_fuko("\x1b[2J\n\n\n孫　@「うわぁーーー，向きがだんだん\n");
+	pr_fuko("　@　@　@変わってきたぁ！」\n\n");
+	pr_fuko("老人「そうぢゃろう．これがフーコー\n");
+	pr_fuko("　@　@　@の振り子の真髄なのぢゃ．よい\n");
+	pr_fuko("　@　@　@な．しかと心に刻み込んでおく\n");
+	pr_fuko("　@　@　@のぢゃぞ．」\n\n");
+	pr_fuko("孫　@「（よくわからないけど）\n");
+	pr_fuko("　@　@　@ほーい……．」\n\n");
+	hit_fuko();
+	pr_fuko("老人「で，もっと続けるのか？」\n\n");
+	pr_fuko("孫　@「うん，もっとやってーー！」\n\n");
+	pr_fuko("老人「そうか，では心ゆくまで振り子\n");
+	pr_fuko("　@　@　@を鑑賞するがよい．」\n\n");
+	hit_fuko();
+}
+
+/******* 孫，おじいちゃんを心配する *********************************/
+void	event_05(void)
+{
+	pr_fuko("\x1b[2J\n\n\n孫　@「おじいちゃん，ずーっと振り子\n");
+	pr_fuko("　@　@　@を持ってて，疲れない？」\n\n");
+	pr_fuko("老人「うんにゃ，さして疲れんが」\n\n");
+	pr_fuko("孫　@「振り子を持つの，私が交代して\n");
+	pr_fuko("　@　@　@あげるから疲れたら言ってネ」\n\n");
+	hit_fuko();
+	pr_fuko("老人「わしの事を心配してくれとるの\n");
+	pr_fuko("　@　@　@か．お前は優しいのぉ……でも\n");
+	fputs("　@　@　@この振り子の長さは",stdout);
+	fputs(itoa((int)NAG,buf,10),stdout);
+	fputs("メートル\n",stdout);
+	pr_fuko("　@　@　@もあるんじゃぞ．お前に持てる\n");
+	pr_fuko("　@　@　@のか？」\n\n");
+	fputs("孫　@「",stdout);
+	fputs(buf,stdout);
+	fputs("メートル？！……\n",stdout);
+	pr_fuko("　@　@　@うーん……でも，がんばる！」\n\n");
+	pr_fuko("老人「うっうっうっ(涙)\n");
+	pr_fuko("　@　@　@こんな優しい孫をもって，わし\n");
+	pr_fuko("　@　@　@は幸せぢゃあ．」\n");
+	hit_fuko();
+}
+
+/******* さすがに眠い孫 *********************************************/
+void	event_06(void)
+{
+	pr_fuko("\x1b[2J\n\n\n孫　@「……ぐぅ……」\n\n");
+	pr_fuko("老人「おい，寝るなよ」\n\n");
+	hit_fuko();
+	pr_fuko("孫　@「……ぐぅ……」\n\n");
+	hit_fuko();
+	pr_fuko("　@　@　@ペシ　@ペシ　@ペシ\n\n");
+	pr_fuko("老人「眠っちゃいかん！眠ったら死ぬ\n");
+	pr_fuko("　@　@　@ぞ！！」\n\n");
+	pr_fuko("　@　@　@ペシ　@ペシ　@ペシ\n\n");
+	hit_fuko();
+	pr_fuko("孫　@「あ，おじいちゃん，おはよう」\n\n");
+	pr_fuko("老人「おはようじゃないって(笑)\n");
+	pr_fuko("　@　@　@ほれ，振り子を見てみぃ」\n\n");
+	pr_fuko("孫　@「うわー，こんなに変ってる！」\n\n");
+	pr_fuko("老人「12時間もたっておるからのぉ」\n\n");
+	hit_fuko();
+	pr_fuko("孫　@「あれ？12時間っていうことは，\n");
+	pr_fuko("　@　@　@ちょうど振り始めの位置の地球\n");
+	pr_fuko("　@　@　@の裏側じゃない？　@という事は\n");
+	pr_fuko("　@　@　@１８０度ずれて，もとの方向に\n");
+	pr_fuko("　@　@　@戻ってるはずなのに，どうして\n");
+	pr_fuko("　@　@　@こんなにずれてるの？」\n\n");
+	hit_fuko();
+	pr_fuko("老人「それはここが札幌だからぢゃ」\n\n");
+	pr_fuko("孫　@「え？どうして？」\n\n");
+	hit_fuko();
+	pr_fuko("老人「北極点なら12時間たてば１８０\n");
+	pr_fuko("　@　@　@度ずれるのじゃが，ここは北極\n");
+	pr_fuko("　@　@　@点，つまり回転の中心からずれ\n");
+	pr_fuko("　@　@　@ておるじゃろ．だからその分，\n");
+	pr_fuko("　@　@　@振り子のずれ方が遅いのぢゃ」\n\n");
+	pr_fuko("孫　@「へぇーーっ！スゴーイ！！\n");
+	pr_fuko("　@　@　@そしたら，１日経って元の位置\n");
+	pr_fuko("　@　@　@に戻っても，振り子の振れは元\n");
+	pr_fuko("　@　@　@もどらないの？」\n\n");
+	pr_fuko("老人「そういう事になるのぉ．\n");
+	pr_fuko("　@　@　@１日経つまで見てみるか？」\n\n");
+	pr_fuko("孫　@「うん！　@見せて見せてー！」\n\n");
+	hit_fuko();
+}
+
+/******* エンディング ***********************************************/
+void	ending(void)
+{
+	pr_fuko("\x1b[2J\n\n\n老人「24時間経ったんぢゃが……\n");
+	pr_fuko("　@　@　@どうぢゃ？　@地球をぐるり一周\n");
+	pr_fuko("　@　@　@して元の位置に戻っても，振り\n");
+	pr_fuko("　@　@　@子の振れは，元の位置には戻ら\n");
+	pr_fuko("　@　@　@んぢゃろ？」\n\n");
+	pr_fuko("孫　@「うん，ホントだぁ」\n\n");
+	hit_fuko();
+	pr_fuko("老人「これが北極点で振り子を振ると\n");
+	pr_fuko("　@　@　@ちゃんと一周して元に戻るし，\n");
+	pr_fuko("　@　@　@赤道直下でやるとぜんぜん動か\n");
+	pr_fuko("　@　@　@ないんぢゃ」\n\n");
+	pr_fuko("孫　@「へぇーーーーーーっ！」\n\n");
+	hit_fuko();
+	g_quit();
+	puts("老人「さすがに１日じゅう振り子を持ち続けると疲れるわい．」\n");
+	puts("孫　@「あ，おじいちゃん，きょうはどうもありがとー！");
+	puts("　@　@　@また何かわからないことがあったら教えてネー．」\n");
+	puts("老人「ああ，いつでも聞きに来なさい．」\n");
+	puts("孫　@「はーい！」\n");
+	exit(0);
+	/*NOTREACHED*/
+}
+
+/******* 途中で投げ出してしまう *************************************/
+void	ctrl_c1(void)
+{
+	signal(SIGINT,SIG_IGN);
+	g_quit();
+	fputs("\n\n\n老人「途中でやめてしまうとは……．\n",stdout);
+	fputs("　@　@　@まぁ，また時間のあるときにでも，ゆっくり見ておくれや．」\n",stdout);
+	exit(0);
+	/*NOTREACHED*/
+}
+void	ctrl_c2(void)
+{
+	signal(SIGINT,SIG_IGN);
+	g_quit();
+	fputs("\n\n\n老人「まだまだ続きがあるというのに……．\n",stdout);
+	fputs("　@　@　@まぁ，また時間のあるときにでも，ゆっくり見ておくれや．」\n",stdout);
+	exit(0);
+	/*NOTREACHED*/
+}
+
+/******* 指定時刻まで待ちながら経過時間の報告 ***********************/
+void	keika_fuko(double lim)
+{
+	unsigned int	t1,t2;
+	
+	fputs("\x1b[2J\n\n\n老人「振り子を振り始めてから，\n",stdout);
+	while(t < lim){
+		t1 = (unsigned int)(t / 3600);
+		if(t1 != 0){
+			fputs(itoa(t1,buf,10),stdout);
+			fputs("時間",stdout);
+			t1 = (unsigned int)t - (t1 * 3600);
+		} else {
+			t1 = (unsigned int)t;
+		}
+		t2 = t1 / 60;
+		if(t2 != 0){
+			fputs(itoa(t2,buf,10),stdout);
+			fputs("分",stdout);
+			t2 = t1 - (t2 * 60);
+		} else {
+			t2 = t1;
+		}
+		fputs(itoa(t2,buf,10),stdout);
+		fputs("秒経過しちょる」          \r　@　@　@",stdout);
+		fuko();
+	}
+}
+
+/******* セリフを表示しつつ，振り子を描く ***************************/
+void	pr_fuko(char *txt)
+{
+	fuko();
+	fputs(txt,stdout);
+}
+
+/******* 何かキー入力があるまで振り子が動いている *******************/
+void	hit_fuko(void)
+{
+	/* キーバッファ@のクリア */
+	while(kbhit())
+		getch();
+	/* 表示して振り子動かしてキー拾って表示消す */
+	hit_dsp();
+	while(!kbhit()){
+		fuko();
+	}
+	getch();
+	hit_rmv();
+}
+
+/******* 何かのキーを押してください *********************************/
+void	hit_any_key(void)
+{
+	hit_dsp();
+	getch();
+	hit_rmv();
+}
+void	hit_dsp(void)
+{
+	fputs("\33[47m--hit any key--\33[m",stdout);
+}
+void	hit_rmv()
+{
+	fputs("\r                 \r",stdout);
+}
+
+/*********************************************************************
+ ******* 指定緯度における振り子の挙動（引数ありの場合）***************
+ ********************************************************************/
+void	majime(void)
+{
+	unsigned int	t1,t2;						/* 時間表示用変数 */
+	
+	/* タイトル */
+	fputs("\x1b[3;2H\x1b[19m==== Foucault's pendulum ====",stdout);
+	waku();
+	fputs("\x1b[23;11H\x1b[17m（終了は [ESC]キー）",stdout);
+	fputs("\x1b[6;3H\x1b[m",stdout);
+	if(th >= 0){
+		fputs("北緯 ",stdout);
+	} else {
+		fputs("南緯 ",stdout);
+	}
+	fputs(gcvt(fabsl(th),3,buf),stdout);
+	fputs("度での振り子の動き\n\n\n  ",stdout);
+	
+	/* 初期値の計算 */
+	calc_init();
+	
+	/* 最初の書き込み */
+	page = chg_page(0);
+	g_put(CX-((int)x+R),CY-((int)y+R),furiko,f_leng,4,0);
+	tx = x;
+	ty = y;
+	page = chg_page(page);
+	
+fuko_m:
+	while(!kbhit()){
+		t1 = (unsigned int)(t / 3600);
+		if(t1 != 0){
+			fputs(itoa(t1,buf,10),stdout);
+			fputs("時間",stdout);
+			t1 = (unsigned int)t - (t1 * 3600);
+		} else {
+			t1 = (unsigned int)t;
+		}
+		t2 = t1 / 60;
+		if(t2 != 0){
+			fputs(itoa(t2,buf,10),stdout);
+			fputs("分",stdout);
+			t2 = t1 - (t2 * 60);
+		} else {
+			t2 = t1;
+		}
+		fputs(itoa(t2,buf,10),stdout);
+		fputs("秒 経過……．\r     ",stdout);
+		fuko();
+	}
+	if(getch() != 0x1b)			/* エスケープキーを押すまで続ける */
+		goto fuko_m;
+	
+	/* 後始末 */
+	g_quit();
+	exit(0);
+}
+
+/*********************************************************************
+ ******* 汎用関数群 **************************************************
+ ********************************************************************/
+
+/******* 初期値計算 *************************************************/
+void	calc_init(void)
+{
+	th = 2 * W * sin(rad(th));				/* ２ωsin(θ)*/
+	g = -(G / NAG);							/* 加速度係数 */
+	ax = g * x - th * vy;					/* 初期加速度 */
+	ay = g * y + th * vx;
+	vx = vx + ax * (DT)/2;					/* 初期速度 */
+	vy = vy + ay * (DT)/2;
+}
+
+/******* 振り子の本体 ***********************************************/
+void	fuko(void)
+{
+	t += DT;							/* 時刻 */
+	x = x + vx * DT;					/* 位置の更新 */
+	y = y + vy * DT;
+	ax = g * x - th * vy;				/* 加速度 */
+	ay = g * y + th * vx;
+	vx = vx + ax * DT / 2;				/* 瞬間速度 */
+	vy = vy + ay * DT / 2;
+	g_put(CX-((int)x+R),CY-((int)y+R),furiko,f_leng,4,0);	/*描画*/
+	page = chg_page(page);
+	g_put(CX-((int)tx+R),CY-((int)ty+R),furiko,f_leng,4,0);
+	tx = x; ty = y;
+}
+
+/******* ワク線 *****************************************************/
+void	waku(void)
+{
+	chg_page(0);
+	wakusenn();
+	chg_page(1);
+	wakusenn();
+}
+void	wakusenn(void)
+{
+	int		wid;					/* 飾り円描き用半径 */
+	double	kaku;					/* 飾り円描き用刻み */
+	
+	/* ワク */
+	g_line(CX-WX,CY+WY,CX+WX,CY-WY,7,1);
+	g_line(CX,CY+WY,CX,CY-WY,7,0);
+	g_line(CX-WX,CY,CX+WY,CY,7,0);
+	/* 飾り */
+	for(kaku=0; kaku<(3.14/2); kaku+=(3.14/60)){
+		wid = (int)(sin(kaku) * WX);
+		g_circle(CX,CY,wid,7);
+	}
+}
+
+/******* 度 to ラジアン *********************************************/
+double rad(double theta)
+{
+	return (theta * 3.14159 / 180.0);
+}
+
+/******* ページチェンジ *********************************************/
+unsigned int	chg_page(int pg)
+{
+	static int	neg[2] = {1,0};		/* graphic描画ページ反転*/
+	static int	dsp[2] = {17,1};	/* graphic表示ページ反転*/
+	
+	pg = neg[pg];
+	g_screen(pg,dsp[pg]);
+	return pg;
+}
+
+/******* グラフィックの後始末 ***************************************/
+void	g_quit(void)
+{
+	g_screen(0,0);
+	g_cls();
+	g_screen(1,0);
+	g_cls();
+	fputs("\x1b[>1l\x1b[2J\x1b[>5l",stdout);
+}
+
+/*********************************************************************
+ ******* 各種エラー処理 **********************************************
+ ********************************************************************/
+
+/******* メモリが足りない *******************************************/
+void	err_no_memory(void)
+{
+	fputs("fuko : メモリが足りません\n",stderr);
+	exit(1);
+	/*NOTREACHED*/
+}
+/******* シグナルがセットできない ***********************************/
+void	err_signal(void)
+{
+	fputs("fuko : 何故か知りませんがsignal関数で不具合が起きました\n",stderr);
+	exit(1);
+	/*NOTREACHED*/
+}
+@
+
+
+1.3
+log
+@南半球に対応しました
+@
+text
+@d17 1
+d80 2
+a81 2
+static char	*furiko;				/* 振り子graphic */
+unsigned int	f_leng;				/* 振り子graphicの大きさ */
+d152 1
+a152 1
+		fputs("\nできれば－９０度から９０度（北緯換算）までの範囲で",stderr);
+@
+
+
+1.2
+log
+@グラフィックライブラリをＭＳ添付のものから
+Ｇ＿ＬＩＯ利用のものに変えました．
+@
+text
+@a4 1
+ *                         12/13 : デフォルト動作追加
+d7 1
+a12 1
+#include <graph.h>
+d149 1
+a149 1
+	if((ido < 0) || (ido > 90)){
+d151 1
+a151 1
+		fputs("\nできれば北緯０度から９０度までの範囲で",stderr);
+d599 7
+a605 2
+	fputs("\x1b[6;3H\x1b[m北緯 ",stdout);
+	fputs(gcvt(th,3,buf),stdout);
+@
+
+
+1.1
+log
+@Initial revision
+@
+text
+@d7 1
+d41 1
+a41 1
+void	g_init(void);					/* グラフィック初期化 */
+d80 2
+a81 1
+char	*furiko;					/* 振り子graphic */
+d97 1
+a97 1
+	g_init();							/* 画面初期化 */
+d113 8
+a120 8
+void	g_init(void)
+{
+	_setvideomode(_98RESSCOLOR);
+	_setactivepage(0);
+	_clearscreen(_GCLEARSCREEN);
+	_setactivepage(1);
+	_clearscreen(_GCLEARSCREEN);
+	_remappalette(5,_98GREEN_D);
+d128 1
+a128 2
+	_setvisualpage(0);
+	_setactivepage(1);
+d130 2
+a131 1
+	furiko = (char *)malloc((unsigned int)_imagesize(0,0,R*2,R*2));
+d137 4
+a140 6
+	_setcolor(2);
+	_ellipse(_GFILLINTERIOR,0,0,R*2,R*2);
+	_getimage(0,0,R*2,R*2,furiko);
+	_setcolor(0);
+	_rectangle(_GFILLINTERIOR,0,0,R*2,R*2);
+	_setcolor(7);
+d181 1
+a181 1
+	_putimage(CX-((int)x+R),CY-((int)y+R),furiko,_GXOR);
+d597 1
+a597 2
+	_settextcolor(3);	_settextposition(3,2);
+	fputs("==== Foucault's pendulum ====",stdout);
+d599 2
+a600 4
+	_settextcolor(4);	_settextposition(23,11);
+	fputs("（終了は [ESC]キー）",stdout);
+	_settextcolor(7);	_settextposition(6,3);
+	fputs("北緯 ",stdout);
+d609 1
+a609 1
+	_putimage(CX-((int)x+R),CY-((int)y+R),furiko,_GXOR);
+d669 1
+a669 1
+	_putimage(CX-((int)x+R),CY-((int)y+R),furiko,_GXOR);	/*描画*/
+d671 1
+a671 1
+	_putimage(CX-((int)tx+R),CY-((int)ty+R),furiko,_GXOR);
+d685 1
+a685 1
+	int		widx,widy;				/* 飾り円描き用巾 */
+d689 3
+a691 3
+	_rectangle(_GBORDER,CX-WX,CY+WY,CX+WX,CY-WY);
+	_moveto(CX,CY+WY);	_lineto(CX,CY-WY);
+	_moveto(CX-WX,CY);	_lineto(CX+WY,CY);
+d694 2
+a695 3
+		widx = (int)(sin(kaku) * WX);
+		widy = (int)(sin(kaku) * WY);
+		_ellipse(_GBORDER,CX-widx,CY+widy,CX+widx,CY-widy);
+d709 2
+d712 1
+a712 2
+	_setactivepage(pg);
+	_setvisualpage(neg[pg]);
+d719 4
+a722 6
+	_setactivepage(0);
+	_clearscreen(_GCLEARSCREEN);
+	_setactivepage(1);
+	_clearscreen(_GCLEARSCREEN);
+	_setvisualpage(0);
+	_setvideomode(_DEFAULTMODE);
+@

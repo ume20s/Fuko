@@ -1,0 +1,9 @@
+fuko.exe	:	fuko.obj g_lio.obj
+	link fuko+g_lio;
+
+fuko.obj	:	fuko.c g_lio.h
+	cl /c /AS /qc /W4 /Od fuko.c > fuko.err
+
+g_lio.obj	:	g_lio.c
+	cl /c /AS /qc /W4 /Od g_lio.c > g_lio.err
+
